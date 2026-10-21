@@ -1,0 +1,338 @@
+import ApplicationServices.HIServices
+import Foundation
+
+struct AXActionRunner {
+    typealias TraceWriter = (String) -> Void
+
+    private let traceEnabled: Bool
+    private let traceWriter: TraceWriter
+
+    init(traceEnabled: Bool) {
+        self.traceEnabled = traceEnabled
+        self.traceWriter = { message in
+            guard let data = "[trace-ax] \(message)\n".data(using: .utf8) else { return }
+            FileHandle.standardError.write(data)
+        }
+    }
+
+    func log(_ message: @autoclosure () -> String) {
+        guard traceEnabled else { return }
+        traceWriter(message())
+    }
+
+    @discardableResult
+    func waitUntil(
+        label: String,
+        timeout: TimeInterval,
+        pollInterval: TimeInterval = 0.1,
+        evaluateAfterTimeout: Bool = true,
+        condition: () -> Bool
+    ) -> Bool {
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+            if condition() {
+                log("\(label): ready")
+                return true
+            }
+            Thread.sleep(forTimeInterval: pollInterval)
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        log("\(label): timeout after \(String(format: "%.2f", elapsed))s")
+        return evaluateAfterTimeout ? condition() : false
+    }
+
+    @discardableResult
+    func focusWithVerification(
+        _ element: UIElement,
+        label: String,
+        attempts: Int = 3,
+        retryDelay: TimeInterval = 0.08
+    ) -> Bool {
+        for attempt in 1...max(attempts, 1) {
+            do {
+                try element.focus()
+            } catch {
+                log("\(label): focus attempt \(attempt) failed (\(error))")
+            }
+
+            if element.isFocused || waitUntil(label: "\(label) focused", timeout: 0.25, condition: {
+                element.isFocused
+            }) {
+                log("\(label): focused on attempt \(attempt)")
+                return true
+            }
+
+            do {
+                try element.press()
+            } catch {
+                log("\(label): press fallback \(attempt) failed (\(error))")
+            }
+
+            if element.isFocused || waitUntil(label: "\(label) focused", timeout: 0.25, condition: {
+                element.isFocused
+            }) {
+                log("\(label): focused by press fallback on attempt \(attempt)")
+                return true
+            }
+
+            Thread.sleep(forTimeInterval: retryDelay)
+        }
+
+        log("\(label): focus verification failed")
+        return false
+    }
+
+    @discardableResult
+    func setTextWithVerification(
+        _ text: String,
+        on element: UIElement,
+        label: String,
+        attempts: Int = 2,
+        retryDelay: TimeInterval = 0.08
+    ) -> Bool {
+        for attempt in 1...max(attempts, 1) {
+            do {
+                try element.setAttribute(kAXValueAttribute, value: text as CFString)
+            } catch {
+                log("\(label): set AXValue attempt \(attempt) failed (\(error))")
+                Thread.sleep(forTimeInterval: retryDelay)
+                continue
+            }
+
+            let reflected = waitUntil(label: "\(label) AXValue reflected", timeout: 0.3, condition: {
+                isInputReflected(expected: text, current: element.stringValue)
+            })
+            if reflected {
+                log("\(label): set AXValue succeeded on attempt \(attempt)")
+                return true
+            }
+
+            Thread.sleep(forTimeInterval: retryDelay)
+        }
+
+        log("\(label): set AXValue verification failed")
+        return false
+    }
+
+    @discardableResult
+    func typeTextWithVerification(
+        _ text: String,
+        on element: UIElement?,
+        label: String,
+        attempts: Int = 2,
+        perCharacterDelay: TimeInterval = 0.01,
+        retryDelay: TimeInterval = 0.08
+    ) -> Bool {
+        for attempt in 1...max(attempts, 1) {
+            let before = element?.stringValue
+            typeText(text, perCharacterDelay: perCharacterDelay)
+            guard let element else {
+                log("\(label): typed without verification target")
+                return true
+            }
+
+            let reflected = waitUntil(label: "\(label) typing reflected", timeout: 0.3, condition: {
+                let after = element.stringValue
+                return isTypingReflected(before: before, after: after, typed: text)
+            })
+            if reflected {
+                log("\(label): typing reflected on attempt \(attempt)")
+                return true
+            }
+
+            Thread.sleep(forTimeInterval: retryDelay)
+        }
+
+        log("\(label): typing verification failed")
+        return false
+    }
+
+    @discardableResult
+    func pressEnterWithVerification(
+        on element: UIElement?,
+        label: String,
+        attempts: Int = 2,
+        reflectionTimeout: TimeInterval = 0.45,
+        retryDelay: TimeInterval = 0.12
+    ) -> Bool {
+        for attempt in 1...max(attempts, 1) {
+            let before = element?.stringValue ?? ""
+            pressKey(code: 36)
+
+            guard let element else {
+                log("\(label): Enter sent without verification target")
+                return true
+            }
+
+            let reflected = waitUntil(label: "\(label) Enter reflected", timeout: reflectionTimeout, condition: {
+                let after = element.stringValue ?? ""
+                return didEnterEffect(before: before, after: after)
+            })
+            if reflected {
+                log("\(label): Enter reflected on attempt \(attempt)")
+                return true
+            }
+
+            Thread.sleep(forTimeInterval: retryDelay)
+        }
+
+        log("\(label): Enter verification failed")
+        return false
+    }
+
+    @discardableResult
+    func clickWithRetry(
+        _ element: UIElement,
+        label: String,
+        attempts: Int = 3,
+        retryDelay: TimeInterval = 0.2
+    ) -> Bool {
+        for attempt in 1...attempts {
+            do {
+                try element.press()
+                log("\(label): clicked on attempt \(attempt)")
+                return true
+            } catch {
+                log("\(label): click attempt \(attempt) failed (\(error))")
+                Thread.sleep(forTimeInterval: retryDelay)
+            }
+        }
+        return false
+    }
+
+    func pressEscape() {
+        pressKey(code: 53)
+    }
+
+    func pressEnterKey() {
+        pressKey(code: 36)
+    }
+
+    func pressDownArrowKey() {
+        pressKey(code: 125)
+    }
+
+    func pressTabKey() {
+        pressKey(code: 48)
+    }
+
+    func pressShiftTabKey() {
+        pressKey(code: 48, flags: .maskShift)
+    }
+
+    func pressSpaceKey() {
+        pressKey(code: 49)
+    }
+
+    func pressCommandW() {
+        pressKey(code: 13, flags: .maskCommand) // W
+    }
+
+    func pressCommandA() {
+        pressKey(code: 0, flags: .maskCommand) // A
+    }
+
+    func pressPaste() {
+        pressKey(code: 9, flags: .maskCommand) // V
+    }
+
+    func typeTextDirect(_ text: String, label: String, perCharacterDelay: TimeInterval = 0.01) {
+        typeText(text, perCharacterDelay: perCharacterDelay)
+        log("\(label): typed without reflection check")
+    }
+
+    private func typeText(_ text: String, perCharacterDelay: TimeInterval) {
+        let source = CGEventSource(stateID: .hidSystemState)
+
+        for char in text {
+            let unit = String(char)
+            if let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) {
+                var unicode = Array(unit.utf16)
+                down.keyboardSetUnicodeString(stringLength: unicode.count, unicodeString: &unicode)
+                down.postToPid(KakaoTalkApp.runningApplication!.processIdentifier)
+            }
+            if let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) {
+                up.postToPid(KakaoTalkApp.runningApplication!.processIdentifier)
+            }
+            Thread.sleep(forTimeInterval: perCharacterDelay)
+        }
+    }
+
+    private func pressKey(code: CGKeyCode, flags: CGEventFlags = []) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        if let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true) {
+            down.flags = flags
+            down.postToPid(KakaoTalkApp.runningApplication!.processIdentifier)
+        }
+        if let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) {
+            up.flags = flags
+            up.postToPid(KakaoTalkApp.runningApplication!.processIdentifier)
+        }
+    }
+
+    /// Post a left-button double-click at the given screen point.
+    /// KakaoTalk's search/chat-list rows expose only AXShowDefaultUI/AXShowAlternateUI and
+    /// ignore both AXPress and keyboard Enter, so a hardware-level double-click is the only
+    /// reliable way to open them.
+    func mouseDoubleClick(at point: CGPoint, label: String) {
+        log("\(label): double-click at (\(Int(point.x)),\(Int(point.y)))")
+        postMouseClicks(at: point, clickCount: 2)
+    }
+
+    private func postMouseClicks(at point: CGPoint, clickCount: Int) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let restorePoint = CGEvent(source: nil)?.location
+
+        CGEvent(
+            mouseEventSource: source,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: point,
+            mouseButton: .left
+        )?.postToPid(KakaoTalkApp.runningApplication!.processIdentifier)
+        Thread.sleep(forTimeInterval: 0.02)
+
+        for click in 1...max(clickCount, 1) {
+            if let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left) {
+                down.setIntegerValueField(.mouseEventClickState, value: Int64(click))
+                down.postToPid(KakaoTalkApp.runningApplication!.processIdentifier)
+            }
+            if let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) {
+                up.setIntegerValueField(.mouseEventClickState, value: Int64(click))
+                up.postToPid(KakaoTalkApp.runningApplication!.processIdentifier)
+            }
+            Thread.sleep(forTimeInterval: 0.04)
+        }
+
+        // Return the cursor so the click does not strand the user's pointer.
+        if let restorePoint {
+            CGEvent(
+                mouseEventSource: source,
+                mouseType: .mouseMoved,
+                mouseCursorPosition: restorePoint,
+                mouseButton: .left
+            )?.postToPid(KakaoTalkApp.runningApplication!.processIdentifier)
+        }
+    }
+
+    private func isInputReflected(expected: String, current: String?) -> Bool {
+        guard let current else { return false }
+        return current == expected || current.contains(expected)
+    }
+
+    private func isTypingReflected(before: String?, after: String?, typed: String) -> Bool {
+        guard let after else { return false }
+        if after == typed || after.contains(typed) {
+            return true
+        }
+        guard let before else { return !after.isEmpty }
+        return after != before
+    }
+
+    private func didEnterEffect(before: String, after: String) -> Bool {
+        let trimmedAfter = after.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !before.isEmpty && trimmedAfter.isEmpty {
+            return true
+        }
+        return after != before
+    }
+}
