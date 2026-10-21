@@ -1,0 +1,21 @@
+{
+  "user_id": null,
+  "database": null,
+  "bundle_id": "com.kakao.KakaoTalkDevMac",
+  "app_path": "/Applications/KakaoTalkNew.app",
+  "profile": "업무 계정",
+  "port": 18765,
+  "poll_seconds": 3,
+  "auto_draft": false,
+  "draft_mode": "dots_local",
+  "draft_backend": "dots_local",
+  "dots_enabled": true,
+  "dots_wakeup_mode": "events_only",
+  "notifications": true,
+  "paused": false,
+  "send_enabled": false,
+  "blocked_chat_ids": [],
+  "chat_aliases": {},
+  "codex_path": "",
+  "codex_thread_id": null
+}
